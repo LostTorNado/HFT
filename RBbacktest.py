@@ -7,17 +7,18 @@ import os
 
 class Variable:
 
-    def __init__(self,para,df):
+    def __init__(self,para,df,p = 'LastPrice'):
         self.para = para
         self.df = df
         self.SRevert = -np.inf
         self.BRevert = np.inf
         self.div = 3
         self.ifSetup = None
+        self.p = p
     
     def CalFixedBands(self):
         r1,r2,r3 = self.para
-        H,L,C = max(self.df['LastPrice']),min(self.df['LastPrice']),self.df['LastPrice'].iloc[-1]
+        H,L,C = max(self.df[self.p]),min(self.df[self.p]),self.df[self.p].iloc[-1]
 
         self.SEnter = ((1 + r1)/2 *(H + C)) - r1 * L
         self.BEnter = ((1 + r1) / 2 * (L + C)) - r1 * H
@@ -58,7 +59,7 @@ def tick_to_minute(df, freq="min"):
     return df_minute
 
 def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_threshold=0.5, stop_loss_mult=2, cost = 0.6):
-    
+
     if df['InstrumentID'][0] != pref['InstrumentID'][0]:
         return
     
@@ -304,7 +305,7 @@ def func(ca,asltotal,total = []):
     #     for sl in [x / 10 for x in range(2,30)]:
     def subfunc(atsl):
         at,sl = atsl
-        result, trades = turtle_backtest(wholef, channel_period=cp, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
+        result, trades = rbreaker_backtest(wholef, channel_period=cp, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
 
         total_pnl = 0
         # 输出交易记录
