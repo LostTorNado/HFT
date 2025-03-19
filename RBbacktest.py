@@ -1,10 +1,34 @@
 import pandas as pd
 import numpy as np
 import talib
-from tqdm import tqdm
 import itertools
 from multiprocess import Pool
 import os
+
+class Variable:
+
+    def __init__(self,para,df):
+        self.para = para
+        self.df = df
+        self.SRevert = -np.inf
+        self.BRevert = np.inf
+        self.div = 3
+        self.ifSetup = None
+    
+    def CalFixedBands(self):
+        r1,r2,r3 = self.para
+        H,L,C = max(self.df['LastPrice']),min(self.df['LastPrice']),self.df['LastPrice'].iloc[-1]
+
+        self.SEnter = ((1 + r1)/2 *(H + C)) - r1 * L
+        self.BEnter = ((1 + r1) / 2 * (L + C)) - r1 * H
+        self.SSetup = H + r2 * (C - L)
+        self.BSetup = L - r2 * (H - C)
+        self.BBreak = self.SSetup + r3 * (self.SSetup - self.BSetup)
+        self.SBreak = self.BSetup - r3 * (self.SSetup - self.BSetup)
+    
+    def CalFloatingBand(self,tdhigh,tdlow):
+        self.SRevert = self.SEnter + (tdhigh - self.SSetup) / self.div
+        self.BRevert = self.BEnter + (tdlow - self.BSetup) / self.div
 
 def tick_to_minute(df, freq="min"):
     """
@@ -33,29 +57,23 @@ def tick_to_minute(df, freq="min"):
     
     return df_minute
 
-def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, stop_loss_mult=2):
-    """
-    海龟交易法则回测示例（含加仓逻辑，不含尾盘平仓逻辑）
+def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_threshold=0.5, stop_loss_mult=2, cost = 0.6):
     
-    参数说明：
-      df: 包含 datetime, open, high, low, close, volume 的 DataFrame（索引为 datetime）
-      channel_period: 唐奇安通道周期（例如20日）
-      atr_period: ATR 计算周期（例如20日）
-      add_threshold: 加仓阈值，单位为 ATR（例如0.5 表示价格比最近入场价上涨/下跌 0.5×ATR时加仓）
-      stop_loss_mult: 止损倍数（例如2 表示价格反向移动 2×ATR时止损）
-      
-    返回：
-      result: 增加了信号、持仓、累计盈亏等信息的 DataFrame
-      trade_log: 交易记录列表，每笔记录包含入场日期、方向、入场价格列表、出场日期、出场价格及盈亏
-    """
-    df = df.copy()
+    if df['InstrumentID'][0] != pref['InstrumentID'][0]:
+        return
     
+    df,pref = df.copy(),pref.copy()
+
+    variable = Variable(para,pref)
+    variable.CalFixedBands()
+    
+    f = df[['LastPrice','Volume']].copy()
+    f.columns = ['price','volume']
+    f.loc[:,'time'] = pd.to_datetime(df['TradingDay'].astype(str) + ' ' + df['UpdateTime'])
+    df = tick_to_minute(f, freq="min").iloc[1:-2,:]
+
     # 计算 ATR（周期为 atr_period）
     df['ATR'] = talib.ATR(df['high'].values, df['low'].values, df['close'].values, timeperiod=atr_period)
-    
-    # 计算唐奇安通道（不包含当前K线，所以使用 shift(1)）
-    df['Donchian_High'] = pd.Series(talib.MAX(df['high'].values, timeperiod=channel_period)).shift(1)
-    df['Donchian_Low']  = pd.Series(talib.MIN(df['low'].values, timeperiod=channel_period)).shift(1)
     
     # 初始化各列
     df['Signal'] = 0           # 信号：1 表示开多或加多，-1 表示开空或加空，0 表示平仓
@@ -70,23 +88,27 @@ def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, sto
     trade_log = []           # 用于记录每笔交易详情
     
     # 从 channel_period 行开始遍历（前面数据不足无法计算通道）
-    for i in range(channel_period, len(df)):
+    for i in range(len(df)):
         current_date = df.index[i]
-        close = df.iloc[i]['close']
+        close,high,low = df.iloc[i]['close'],df.iloc[i]['high'],df.iloc[i]['low']
         atr = df.iloc[i]['ATR']
-        don_high = df.iloc[i]['Donchian_High']
-        don_low = df.iloc[i]['Donchian_Low']
         
-        # 如果关键指标未计算出来，则跳过
-        if pd.isna(atr) or pd.isna(don_high) or pd.isna(don_low):
-            df.at[current_date, 'Position'] = position
-            df.at[current_date, 'Cum_PnL'] = cumulative_pnl
-            continue
-        
-        # 无仓位时，判断入场信号
-        if position == 0:
-            if close > don_high:
-                # 突破上轨，开多仓
+        if high > variable.BBreak and variable.BBreak > variable.SRevert:
+            if position < 0:
+                pnl = sum([price - close - cost for price in entry_prices])
+                cumulative_pnl += pnl
+                df.at[current_date, 'Signal'] = 0  # 平仓信号
+                df.at[current_date, 'Trade_Price'] = close
+                trade_log[-1].update({
+                    'Exit_Date': current_date,
+                    'Exit_Price': close,
+                    'PnL': pnl
+                })
+                position = 0
+                entry_prices = []
+                last_entry = None
+
+            if position == 0:
                 position = 1
                 entry_prices = [close]
                 last_entry = close
@@ -97,8 +119,23 @@ def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, sto
                     'Direction': 'Long',
                     'Entry_Prices': entry_prices.copy()
                 })
-            elif close < don_low:
-                # 突破下轨，开空仓
+
+        if low < variable.SBreak and variable.SBreak < variable.BRevert:
+            if position > 0:
+                pnl = sum([close - price - cost for price in entry_prices])
+                cumulative_pnl += pnl
+                df.at[current_date, 'Signal'] = 0  # 平仓信号
+                df.at[current_date, 'Trade_Price'] = close
+                trade_log[-1].update({
+                    'Exit_Date': current_date,
+                    'Exit_Price': close,
+                    'PnL': pnl
+                })
+                position = 0
+                entry_prices = []
+                last_entry = None
+
+            if position == 0:
                 position = -1
                 entry_prices = [close]
                 last_entry = close
@@ -109,20 +146,11 @@ def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, sto
                     'Direction': 'Short',
                     'Entry_Prices': entry_prices.copy()
                 })
-        else:
-            # 持仓中：判断加仓和止损
-            if position > 0:  # 多仓逻辑
-                # 加仓条件：当前价格比最近入场价格上涨超过 add_threshold × ATR
-                if close >= last_entry + add_threshold * atr:
-                    position += 1
-                    entry_prices.append(close)
-                    last_entry = close  # 更新最新入场价格
-                    df.at[current_date, 'Signal'] = 1  # 表示加仓
-                    df.at[current_date, 'Trade_Price'] = close
-                    trade_log[-1]['Entry_Prices'] = entry_prices.copy()
-                # 止损条件：当前价格低于最近入场价格减去 stop_loss_mult × ATR
-                elif close <= last_entry - stop_loss_mult * atr:
-                    pnl = sum([close - price for price in entry_prices])
+
+        if variable.ifSetup == 'BSetup':
+            if high > variable.BRevert:
+                if position < 0:
+                    pnl = sum([price - close - cost for price in entry_prices])
                     cumulative_pnl += pnl
                     df.at[current_date, 'Signal'] = 0  # 平仓信号
                     df.at[current_date, 'Trade_Price'] = close
@@ -134,18 +162,22 @@ def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, sto
                     position = 0
                     entry_prices = []
                     last_entry = None
-            elif position < 0:  # 空仓逻辑
-                # 加仓条件：当前价格比最近入场价格下跌超过 add_threshold × ATR
-                if close <= last_entry - add_threshold * atr:
-                    position -= 1
-                    entry_prices.append(close)
+
+                if position == 0:
+                    position = 1
+                    entry_prices = [close]
                     last_entry = close
-                    df.at[current_date, 'Signal'] = -1  # 表示加仓
+                    df.at[current_date, 'Signal'] = 1
                     df.at[current_date, 'Trade_Price'] = close
-                    trade_log[-1]['Entry_Prices'] = entry_prices.copy()
-                # 止损条件：当前价格高于最近入场价格加上 stop_loss_mult × ATR
-                elif close >= last_entry + stop_loss_mult * atr:
-                    pnl = sum([price - close for price in entry_prices])
+                    trade_log.append({
+                        'Entry_Date': current_date,
+                        'Direction': 'Long',
+                        'Entry_Prices': entry_prices.copy()
+                    })
+        if variable.ifSetup == 'SSetup':
+            if low < variable.SRevert:
+                if position > 0:
+                    pnl = sum([close - price - cost for price in entry_prices])
                     cumulative_pnl += pnl
                     df.at[current_date, 'Signal'] = 0  # 平仓信号
                     df.at[current_date, 'Trade_Price'] = close
@@ -157,7 +189,70 @@ def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, sto
                     position = 0
                     entry_prices = []
                     last_entry = None
-                    
+
+                    if position == 0:
+                        position = -1
+                        entry_prices = [close]
+                        last_entry = close
+                        df.at[current_date, 'Signal'] = -1
+                        df.at[current_date, 'Trade_Price'] = close
+                        trade_log.append({
+                            'Entry_Date': current_date,
+                            'Direction': 'Short',
+                            'Entry_Prices': entry_prices.copy()
+                        })
+        if position > 0:
+            if high >= last_entry + add_threshold * atr:
+                position += 1
+                entry_prices.append(close)
+                last_entry = close  # 更新最新入场价格
+                df.at[current_date, 'Signal'] = 1  # 表示加仓
+                df.at[current_date, 'Trade_Price'] = close
+                trade_log[-1]['Entry_Prices'] = entry_prices.copy()
+            # 止损条件：当前价格低于最近入场价格减去 stop_loss_mult × ATR
+            elif low <= last_entry - stop_loss_mult * atr:
+                pnl = sum([close - price - cost for price in entry_prices])
+                cumulative_pnl += pnl
+                df.at[current_date, 'Signal'] = 0  # 平仓信号
+                df.at[current_date, 'Trade_Price'] = close
+                trade_log[-1].update({
+                    'Exit_Date': current_date,
+                    'Exit_Price': close,
+                    'PnL': pnl
+                })
+                position = 0
+                entry_prices = []
+                last_entry = None
+        
+        if position < 0:
+            if low <= last_entry - add_threshold * atr:
+                position -= 1
+                entry_prices.append(close)
+                last_entry = close
+                df.at[current_date, 'Signal'] = -1  # 表示加仓
+                df.at[current_date, 'Trade_Price'] = close
+                trade_log[-1]['Entry_Prices'] = entry_prices.copy()
+
+            elif high >= last_entry + stop_loss_mult * atr:
+                pnl = sum([price - close - cost for price in entry_prices])
+                cumulative_pnl += pnl
+                df.at[current_date, 'Signal'] = 0  # 平仓信号
+                df.at[current_date, 'Trade_Price'] = close
+                trade_log[-1].update({
+                    'Exit_Date': current_date,
+                    'Exit_Price': close,
+                    'PnL': pnl
+                })
+                position = 0
+                entry_prices = []
+                last_entry = None
+
+        variable.CalFloatingBand(df['high'].iloc[i],df['low'].iloc[i])
+        if high > variable.SSetup:
+            variable.ifSetup = 'SSetup'
+        if low < variable.BSetup:
+            variable.ifSetup = 'BSetup'
+
         # 记录当天的持仓和累计盈亏
         df.at[current_date, 'Position'] = position
         df.at[current_date, 'Cum_PnL'] = cumulative_pnl
@@ -167,9 +262,9 @@ def turtle_backtest(df, channel_period=20, atr_period=20, add_threshold=0.5, sto
         final_date = df.index[-1]
         final_price = df.iloc[-1]['close']
         if position > 0:
-            pnl = sum([final_price - price for price in entry_prices])
+            pnl = sum([final_price - price - cost for price in entry_prices])
         else:
-            pnl = sum([price - final_price for price in entry_prices])
+            pnl = sum([price - final_price - cost for price in entry_prices])
         cumulative_pnl += pnl
         # 更新最后一笔交易记录，标记为最终平仓
         if trade_log:

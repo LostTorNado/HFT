@@ -8,10 +8,10 @@ from multiprocess import Pool
 fpath = 'E:/BaiduNetdiskDownload/观澜行情采集'
 fnames = os.listdir(fpath)
 local_path = 'E:/ryse/LocalDatabase'
-code = 'IF'
+code = 'IH'
 os.makedirs(f'data/{code}', exist_ok=True)
 f = pd.read_csv(local_path + '/' + code + '.csv')
-f = f[f['Date'] >= 20230302].reset_index(drop=True)
+f = f[f['Date'] >= 20230302].dropna(subset=['FCodeClose']).reset_index(drop=True)
 # for dt in tqdm(range(len(f['Date']))):
 
 def main(dt):
