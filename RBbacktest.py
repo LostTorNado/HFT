@@ -4,6 +4,7 @@ import talib
 import itertools
 from multiprocess import Pool
 import os
+from tqdm import tqdm
 
 class Variable:
 
@@ -60,7 +61,7 @@ def tick_to_minute(df, freq="min"):
 def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_threshold=0.5, stop_loss_mult=2, cost = 0.6):
     
     if df['InstrumentID'][0] != pref['InstrumentID'][0]:
-        return
+        return None,None
     
     df,pref = df.copy(),pref.copy()
 
@@ -283,49 +284,52 @@ def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_thresh
     
     return df, trade_log
 
-wholef = pd.DataFrame()
-direc = os.listdir('FutSF_TickKZ_CTP_Daily_202302')
+# for file_name in direc:
+#     if 'IM' not in file_name:
+#         continue
+#     df = pd.read_csv(os.path.join(fpath,file_name), encoding='gbk')
 
-for file_name in direc:
-    if 'IC' not in file_name:
-        continue
-    df = pd.read_csv(os.path.join('FutSF_TickKZ_CTP_Daily_202302',file_name), encoding='gbk')
+#     f = df[['最新价','数量']].copy()
+#     f.columns = ['price','volume']
+#     f.loc[:,'time'] = pd.to_datetime(df['交易日'].astype(str) + ' ' + df['最后修改时间'])
+#     ff = tick_to_minute(f, freq="min").iloc[:-4,:]
+#     wholef=pd.concat([wholef,ff],ignore_index=True)
 
-    f = df[['最新价','数量']].copy()
-    f.columns = ['price','volume']
-    f.loc[:,'time'] = pd.to_datetime(df['交易日'].astype(str) + ' ' + df['最后修改时间'])
-    ff = tick_to_minute(f, freq="min").iloc[:-4,:]
-    wholef=pd.concat([wholef,ff],ignore_index=True)
-
-def func(ca,asltotal,total = []):
-    cp,ap = ca
+def func(ca,rtotal,total = []):
+    ap,at,sl = ca
     cur_max = 0
-    # for at in [x / 10 for x in range(1,30)]:
-    #     for sl in [x / 10 for x in range(2,30)]:
-    def subfunc(atsl):
-        at,sl = atsl
-        result, trades = turtle_backtest(wholef, channel_period=cp, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
+    fpath = 'data/IM'
+    direc = os.listdir(fpath)[:10]
 
+    def subfunc(r1r2r3):
+    
         total_pnl = 0
-        # 输出交易记录
-        for trade in trades:
-            total_pnl += trade.get('PnL', 0) - 0.6
+        total_trades = 0
 
-        # print("总盈亏：", total_pnl)
-        # total.append([cp,ap,at,sl,total_pnl])
-        # if total_pnl > cur_max:
-        #     cur_max = total_pnl
-        # if total_pnl > 0:
-        #     print('\n', cp,ap,at,sl,total_pnl,f'cur_max: {cur_max}',len(trades))
-        return [cp,ap,at,sl,total_pnl,len(trades)]
-    with Pool(processes = 4) as pool:
-        result = pool.map(lambda atsl:subfunc(atsl), atsltotal)
-    result = sorted(result,key=lambda x:x[4],reverse=True)
+        for i in range(len(direc) - 1):
+            pref = pd.read_csv(os.path.join(fpath,direc[i]), encoding='gbk')
+            df = pd.read_csv(os.path.join(fpath,direc[i+1]), encoding='gbk')
+
+            result, trades = rbreaker_backtest(df, pref, r1r2r3, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
+
+            if trades is not None:
+                for trade in trades:
+                    total_pnl += trade.get('PnL', 0)
+                total_trades += len(trades)
+        return [r1r2r3[0],r1r2r3[1],r1r2r3[2],ap,at,sl,total_pnl,total_trades]
+    with Pool(processes = 20) as pool:
+        result = pool.map(lambda atsl:subfunc(atsl), rtotal)
+    # result = []
+    # for r in tqdm(rtotal):
+    #     result.append(subfunc(r))
+    result = sorted(result,key=lambda x:x[6],reverse=True)
+    csvfile = pd.DataFrame(result,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
+    csvfile.to_csv(f'sample_result.csv',index=False)
     for r in result[:15]:
-        if r[4] > cur_max:
-            cur_max = r[4]
-        if r[4] > 0:
-            print('\n', r[0],r[1],r[2],r[3],r[4],f'cur_max: {cur_max}',r[5])
+        if r[6] > cur_max:
+            cur_max = r[6]
+        if r[6] > 0:
+            print('\n', r[0],r[1],r[2],r[3],r[4],r[5],r[6],f'cur_max: {cur_max}',r[7])
     total = np.append(total,result[:10])
     np.save('total.npy', total)
     return total
@@ -333,13 +337,15 @@ def func(ca,asltotal,total = []):
 
 if __name__ == '__main__':
 
-    cpap = list(itertools.product(range(2,40),range(2,40)))
-    atsltotal = list(itertools.product([x / 10 for x in range(1,30)],[x / 10 for x in range(2,30)]))
+    # apatsl = list(itertools.product([x for x in range(2,20)],[x / 10 for x in range(1,20)], [x / 10 for x in range(2,20)]))
+    apatsl = [[2,0.5,2.4]]
+    n = 20
+    r1r2r3 = list(itertools.product([x / n for x in range(n)],[x / n for x in range(n)],[x / n for x in range(n)]))
     # with Pool(processes = 10) as pool:
     #     resultss = pool.map(lambda cp:func(cp), cpap)
     resultss = []
     r = []
-    for c in cpap:
-        r = func(c,atsltotal,r)
+    for c in apatsl:
+        r = func(c,r1r2r3,r)
     resultss = np.append(resultss,r)
-    np.save(resultss, 'resultss.npy')
+    np.save('resultss.npy',resultss)
