@@ -295,36 +295,63 @@ def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_thresh
 #     ff = tick_to_minute(f, freq="min").iloc[:-4,:]
 #     wholef=pd.concat([wholef,ff],ignore_index=True)
 
-def func(ca,rtotal,total = []):
+def func(ca,rtotal,total = [],code = 'IM'):
+    if not os.path.exists(f'results/{code}'):
+        os.makedirs(f'results/{code}',exist_ok=True)
     ap,at,sl = ca
     cur_max = 0
-    fpath = 'data/IM'
-    direc = os.listdir(fpath)[:10]
+    fpath = 'data/' + code
+    direc = os.listdir(fpath)[:200]
+    reftd = pd.read_csv('../LocalDatabase/date.csv')
+    startdate = min([int(i.split('.')[0].split('_')[1]) for i in direc])
+    enddate = max([int(i.split('.')[0].split('_')[1]) for i in direc])
+    reftd = reftd[(pd.to_datetime(reftd['Date']) >= pd.to_datetime(str(startdate))) & 
+                  (pd.to_datetime(reftd['Date']) <= pd.to_datetime(str(enddate)))].reset_index(drop=True)
 
-    def subfunc(r1r2r3):
-    
-        total_pnl = 0
-        total_trades = 0
+    for i in tqdm(range(len(reftd) - 1)):
+        prename = f'{code}_{pd.to_datetime(reftd["Date"][i]).strftime("%Y%m%d")}.csv'
+        name = f'{code}_{pd.to_datetime(reftd["Date"][i+1]).strftime("%Y%m%d")}.csv'
+        if prename not in direc or name not in direc:
+            continue
+        pref = pd.read_csv(os.path.join(fpath,prename), encoding='gbk')
+        df = pd.read_csv(os.path.join(fpath,name), encoding='gbk')
 
-        for i in range(len(direc) - 1):
-            pref = pd.read_csv(os.path.join(fpath,direc[i]), encoding='gbk')
-            df = pd.read_csv(os.path.join(fpath,direc[i+1]), encoding='gbk')
+        def subfunc(r1r2r3):
 
             result, trades = rbreaker_backtest(df, pref, r1r2r3, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
 
+            day_pnl = 0
+            day_trades = 0
             if trades is not None:
                 for trade in trades:
-                    total_pnl += trade.get('PnL', 0)
-                total_trades += len(trades)
-        return [r1r2r3[0],r1r2r3[1],r1r2r3[2],ap,at,sl,total_pnl,total_trades]
-    with Pool(processes = 20) as pool:
-        result = pool.map(lambda atsl:subfunc(atsl), rtotal)
-    # result = []
-    # for r in tqdm(rtotal):
-    #     result.append(subfunc(r))
+                    day_pnl += trade.get('PnL', 0)
+                day_trades += len(trades)
+            else:
+                day_pnl = -1000000
+                day_trades = -1
+
+            return [r1r2r3[0],r1r2r3[1],r1r2r3[2],ap,at,sl,day_pnl,day_trades]
+        with Pool(processes = 16) as pool:
+            result = pool.map(lambda atsl:subfunc(atsl), rtotal)
+        # result = []
+        # for r in tqdm(rtotal):
+        #     result.append(subfunc(r))
+        
+        to_save = result
+        to_save = pd.DataFrame(to_save,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
+        to_save = to_save.sort_values(by = ['pnl'],ascending=False)
+
+        if not os.path.exists(f'results/{code}/{reftd['Date'][i+1]}.csv'):
+            to_save.to_csv(f'results/{code}/{reftd['Date'][i+1]}.csv',index=False)
+        else:
+            pre = pd.read_csv(f'results/{code}/{reftd['Date'][i+1]}.csv')
+            pre = pd.concat([pre,to_save],ignore_index=True)
+            pre = pre.sort_values(by = ['pnl'],ascending=False)
+            pre.to_csv(f'results/{code}/{reftd['Date'][i+1]}.csv',index=False)
+
     result = sorted(result,key=lambda x:x[6],reverse=True)
-    csvfile = pd.DataFrame(result,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
-    csvfile.to_csv(f'sample_result.csv',index=False)
+    # csvfile = pd.DataFrame(result,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
+    # csvfile.to_csv(f'sample_result.csv',index=False)
     for r in result[:15]:
         if r[6] > cur_max:
             cur_max = r[6]
@@ -346,6 +373,6 @@ if __name__ == '__main__':
     resultss = []
     r = []
     for c in apatsl:
-        r = func(c,r1r2r3,r)
+        r = func(c,r1r2r3,r,code = 'IM')
     resultss = np.append(resultss,r)
     np.save('resultss.npy',resultss)
