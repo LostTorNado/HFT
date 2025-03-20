@@ -4,6 +4,7 @@ import talib
 import itertools
 from multiprocess import Pool
 import os
+from tqdm import tqdm
 
 class Variable:
 
@@ -61,7 +62,7 @@ def tick_to_minute(df, freq="min"):
 def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_threshold=0.5, stop_loss_mult=2, cost = 0.6):
 
     if df['InstrumentID'][0] != pref['InstrumentID'][0]:
-        return
+        return None,None
     
     df,pref = df.copy(),pref.copy()
 
@@ -284,49 +285,79 @@ def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_thresh
     
     return df, trade_log
 
-wholef = pd.DataFrame()
-direc = os.listdir('FutSF_TickKZ_CTP_Daily_202302')
+# for file_name in direc:
+#     if 'IM' not in file_name:
+#         continue
+#     df = pd.read_csv(os.path.join(fpath,file_name), encoding='gbk')
 
-for file_name in direc:
-    if 'IC' not in file_name:
-        continue
-    df = pd.read_csv(os.path.join('FutSF_TickKZ_CTP_Daily_202302',file_name), encoding='gbk')
+#     f = df[['最新价','数量']].copy()
+#     f.columns = ['price','volume']
+#     f.loc[:,'time'] = pd.to_datetime(df['交易日'].astype(str) + ' ' + df['最后修改时间'])
+#     ff = tick_to_minute(f, freq="min").iloc[:-4,:]
+#     wholef=pd.concat([wholef,ff],ignore_index=True)
 
-    f = df[['最新价','数量']].copy()
-    f.columns = ['price','volume']
-    f.loc[:,'time'] = pd.to_datetime(df['交易日'].astype(str) + ' ' + df['最后修改时间'])
-    ff = tick_to_minute(f, freq="min").iloc[:-4,:]
-    wholef=pd.concat([wholef,ff],ignore_index=True)
-
-def func(ca,asltotal,total = []):
-    cp,ap = ca
+def func(ca,rtotal,total = [],code = 'IM'):
+    if not os.path.exists(f'results/{code}'):
+        os.makedirs(f'results/{code}',exist_ok=True)
+    ap,at,sl = ca
     cur_max = 0
-    # for at in [x / 10 for x in range(1,30)]:
-    #     for sl in [x / 10 for x in range(2,30)]:
-    def subfunc(atsl):
-        at,sl = atsl
-        result, trades = rbreaker_backtest(wholef, channel_period=cp, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
+    fpath = 'data/' + code
+    direc = os.listdir(fpath)[:200]
+    reftd = pd.read_csv('../LocalDatabase/date.csv')
+    startdate = min([int(i.split('.')[0].split('_')[1]) for i in direc])
+    enddate = max([int(i.split('.')[0].split('_')[1]) for i in direc])
+    reftd = reftd[(pd.to_datetime(reftd['Date']) >= pd.to_datetime(str(startdate))) & 
+                  (pd.to_datetime(reftd['Date']) <= pd.to_datetime(str(enddate)))].reset_index(drop=True)
 
-        total_pnl = 0
-        # 输出交易记录
-        for trade in trades:
-            total_pnl += trade.get('PnL', 0) - 0.6
+    for i in tqdm(range(len(reftd) - 1)):
+        prename = f'{code}_{pd.to_datetime(reftd["Date"][i]).strftime("%Y%m%d")}.csv'
+        name = f'{code}_{pd.to_datetime(reftd["Date"][i+1]).strftime("%Y%m%d")}.csv'
+        if prename not in direc or name not in direc:
+            continue
+        pref = pd.read_csv(os.path.join(fpath,prename), encoding='gbk')
+        df = pd.read_csv(os.path.join(fpath,name), encoding='gbk')
 
-        # print("总盈亏：", total_pnl)
-        # total.append([cp,ap,at,sl,total_pnl])
-        # if total_pnl > cur_max:
-        #     cur_max = total_pnl
-        # if total_pnl > 0:
-        #     print('\n', cp,ap,at,sl,total_pnl,f'cur_max: {cur_max}',len(trades))
-        return [cp,ap,at,sl,total_pnl,len(trades)]
-    with Pool(processes = 4) as pool:
-        result = pool.map(lambda atsl:subfunc(atsl), atsltotal)
-    result = sorted(result,key=lambda x:x[4],reverse=True)
+        def subfunc(r1r2r3):
+
+            result, trades = rbreaker_backtest(df, pref, r1r2r3, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
+
+            day_pnl = 0
+            day_trades = 0
+            if trades is not None:
+                for trade in trades:
+                    day_pnl += trade.get('PnL', 0)
+                day_trades += len(trades)
+            else:
+                day_pnl = -1000000
+                day_trades = -1
+
+            return [r1r2r3[0],r1r2r3[1],r1r2r3[2],ap,at,sl,day_pnl,day_trades]
+        with Pool(processes = 16) as pool:
+            result = pool.map(lambda atsl:subfunc(atsl), rtotal)
+        # result = []
+        # for r in tqdm(rtotal):
+        #     result.append(subfunc(r))
+        
+        to_save = result
+        to_save = pd.DataFrame(to_save,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
+        to_save = to_save.sort_values(by = ['pnl'],ascending=False)
+
+        if not os.path.exists(f'results/{code}/{reftd['Date'][i+1]}.csv'):
+            to_save.to_csv(f'results/{code}/{reftd['Date'][i+1]}.csv',index=False)
+        else:
+            pre = pd.read_csv(f'results/{code}/{reftd['Date'][i+1]}.csv')
+            pre = pd.concat([pre,to_save],ignore_index=True)
+            pre = pre.sort_values(by = ['pnl'],ascending=False)
+            pre.to_csv(f'results/{code}/{reftd['Date'][i+1]}.csv',index=False)
+
+    result = sorted(result,key=lambda x:x[6],reverse=True)
+    # csvfile = pd.DataFrame(result,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
+    # csvfile.to_csv(f'sample_result.csv',index=False)
     for r in result[:15]:
-        if r[4] > cur_max:
-            cur_max = r[4]
-        if r[4] > 0:
-            print('\n', r[0],r[1],r[2],r[3],r[4],f'cur_max: {cur_max}',r[5])
+        if r[6] > cur_max:
+            cur_max = r[6]
+        if r[6] > 0:
+            print('\n', r[0],r[1],r[2],r[3],r[4],r[5],r[6],f'cur_max: {cur_max}',r[7])
     total = np.append(total,result[:10])
     np.save('total.npy', total)
     return total
@@ -334,13 +365,15 @@ def func(ca,asltotal,total = []):
 
 if __name__ == '__main__':
 
-    cpap = list(itertools.product(range(2,40),range(2,40)))
-    atsltotal = list(itertools.product([x / 10 for x in range(1,30)],[x / 10 for x in range(2,30)]))
+    # apatsl = list(itertools.product([x for x in range(2,20)],[x / 10 for x in range(1,20)], [x / 10 for x in range(2,20)]))
+    apatsl = [[2,0.5,2.4]]
+    n = 20
+    r1r2r3 = list(itertools.product([x / n for x in range(n)],[x / n for x in range(n)],[x / n for x in range(n)]))
     # with Pool(processes = 10) as pool:
     #     resultss = pool.map(lambda cp:func(cp), cpap)
     resultss = []
     r = []
-    for c in cpap:
-        r = func(c,atsltotal,r)
+    for c in apatsl:
+        r = func(c,r1r2r3,r,code = 'IM')
     resultss = np.append(resultss,r)
-    np.save(resultss, 'resultss.npy')
+    np.save('resultss.npy',resultss)
