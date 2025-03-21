@@ -89,37 +89,37 @@ def rbreaker_backtest(df,pref,init_pos = 0, para = [0.01,0.01,0.01], atr_period=
     cumulative_pnl = 0.0
     trade_log = []           # 用于记录每笔交易详情
     
+    current_date = df.index[0]
+    close = df.iloc[0]['close']
+    if init_pos > 0:
+        position = 1
+        entry_prices = [close]
+        last_entry = close
+        df.at[current_date, 'Signal'] = 1
+        df.at[current_date, 'Trade_Price'] = close
+        trade_log.append({
+            'Entry_Date': current_date,
+            'Direction': 'Long',
+            'Entry_Prices': entry_prices.copy()
+        })
+        
+    if init_pos < 0:
+        position = -1
+        entry_prices = [close]
+        last_entry = close
+        df.at[current_date, 'Signal'] = -1
+        df.at[current_date, 'Trade_Price'] = close
+        trade_log.append({
+            'Entry_Date': current_date,
+            'Direction': 'Short',
+            'Entry_Prices': entry_prices.copy()
+        })
+
     # 从 channel_period 行开始遍历（前面数据不足无法计算通道）
     for i in range(len(df)):
         current_date = df.index[i]
         close,high,low = df.iloc[i]['close'],df.iloc[i]['high'],df.iloc[i]['low']
         atr = df.iloc[i]['ATR']
-
-        if init_pos > 0:
-            position = 1
-            entry_prices = [close]
-            last_entry = close
-            df.at[current_date, 'Signal'] = 1
-            df.at[current_date, 'Trade_Price'] = close
-            trade_log.append({
-                'Entry_Date': current_date,
-                'Direction': 'Long',
-                'Entry_Prices': entry_prices.copy()
-            })
-            continue
-        
-        if init_pos < 0:
-            position = -1
-            entry_prices = [close]
-            last_entry = close
-            df.at[current_date, 'Signal'] = -1
-            df.at[current_date, 'Trade_Price'] = close
-            trade_log.append({
-                'Entry_Date': current_date,
-                'Direction': 'Short',
-                'Entry_Prices': entry_prices.copy()
-            })
-            continue
         
         if high > variable.BBreak and variable.BBreak > variable.SRevert:
             if position < 0:
