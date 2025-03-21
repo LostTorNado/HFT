@@ -5,6 +5,7 @@ import itertools
 from multiprocess import Pool
 import os
 from tqdm import tqdm
+import gc
 
 class Variable:
 
@@ -58,7 +59,7 @@ def tick_to_minute(df, freq="min"):
     
     return df_minute
 
-def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_threshold=0.5, stop_loss_mult=2, cost = 0.6):
+def rbreaker_backtest(df,pref,init_pos = 0, para = [0.01,0.01,0.01], atr_period=2, add_threshold=0.5, stop_loss_mult=2, cost = 0.6):
     
     if df['InstrumentID'][0] != pref['InstrumentID'][0]:
         return None,None
@@ -93,6 +94,32 @@ def rbreaker_backtest(df,pref, para = [0.01,0.01,0.01], atr_period=2, add_thresh
         current_date = df.index[i]
         close,high,low = df.iloc[i]['close'],df.iloc[i]['high'],df.iloc[i]['low']
         atr = df.iloc[i]['ATR']
+
+        if init_pos > 0:
+            position = 1
+            entry_prices = [close]
+            last_entry = close
+            df.at[current_date, 'Signal'] = 1
+            df.at[current_date, 'Trade_Price'] = close
+            trade_log.append({
+                'Entry_Date': current_date,
+                'Direction': 'Long',
+                'Entry_Prices': entry_prices.copy()
+            })
+            continue
+        
+        if init_pos < 0:
+            position = -1
+            entry_prices = [close]
+            last_entry = close
+            df.at[current_date, 'Signal'] = -1
+            df.at[current_date, 'Trade_Price'] = close
+            trade_log.append({
+                'Entry_Date': current_date,
+                'Direction': 'Short',
+                'Entry_Prices': entry_prices.copy()
+            })
+            continue
         
         if high > variable.BBreak and variable.BBreak > variable.SRevert:
             if position < 0:
@@ -301,24 +328,27 @@ def func(ca,rtotal,total = [],code = 'IM'):
     ap,at,sl = ca
     cur_max = 0
     fpath = 'data/' + code
-    direc = os.listdir(fpath)[:200]
-    reftd = pd.read_csv('../LocalDatabase/date.csv')
+    direc = os.listdir(fpath)
+    reftd = pd.read_csv(f'preds/{code}.csv')
     startdate = min([int(i.split('.')[0].split('_')[1]) for i in direc])
     enddate = max([int(i.split('.')[0].split('_')[1]) for i in direc])
     reftd = reftd[(pd.to_datetime(reftd['Date']) >= pd.to_datetime(str(startdate))) & 
                   (pd.to_datetime(reftd['Date']) <= pd.to_datetime(str(enddate)))].reset_index(drop=True)
 
     for i in tqdm(range(len(reftd) - 1)):
+        if os.path.exists(f'results/{code}/{reftd['Date'][i+1]}.csv'):
+            continue
         prename = f'{code}_{pd.to_datetime(reftd["Date"][i]).strftime("%Y%m%d")}.csv'
         name = f'{code}_{pd.to_datetime(reftd["Date"][i+1]).strftime("%Y%m%d")}.csv'
         if prename not in direc or name not in direc:
             continue
         pref = pd.read_csv(os.path.join(fpath,prename), encoding='gbk')
         df = pd.read_csv(os.path.join(fpath,name), encoding='gbk')
+        pred = reftd['pred'][i]
 
         def subfunc(r1r2r3):
 
-            result, trades = rbreaker_backtest(df, pref, r1r2r3, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
+            result, trades = rbreaker_backtest(df, pref, pred, r1r2r3, atr_period=ap, add_threshold=at, stop_loss_mult=sl)
 
             day_pnl = 0
             day_trades = 0
@@ -331,6 +361,7 @@ def func(ca,rtotal,total = [],code = 'IM'):
                 day_trades = -1
 
             return [r1r2r3[0],r1r2r3[1],r1r2r3[2],ap,at,sl,day_pnl,day_trades]
+        gc.collect()
         with Pool(processes = 16) as pool:
             result = pool.map(lambda atsl:subfunc(atsl), rtotal)
         # result = []
