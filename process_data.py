@@ -8,7 +8,7 @@ from multiprocess import Pool
 fpath = 'E:/BaiduNetdiskDownload/观澜行情采集'
 fnames = os.listdir(fpath)
 local_path = 'E:/ryse/LocalDatabase'
-code = 'IH'
+code = 'EC'
 os.makedirs(f'data/{code}', exist_ok=True)
 f = pd.read_csv(local_path + '/' + code + '.csv')
 f = f[f['Date'] >= 20230302].dropna(subset=['FCodeClose']).reset_index(drop=True)
@@ -25,7 +25,9 @@ def main(dt):
     tarfilename = f'md-{date}.tar.gz'
     if tarfilename not in fnames:
         return
-    maincode = f['FCodeHisCode'][dt].split('.')[0]
+    maincode,jiaoyi = f['FCodeHisCode'][dt].split('.')
+    if jiaoyi not in ['CZC','CFE']:
+        maincode = maincode.lower()
     with tarfile.open(fpath + '/' + tarfilename, 'r:gz') as tar:
         member = tar.getmember(f'{f['Date'][dt]}/{maincode}_{f['Date'][dt]}.txt')
         with tar.extractfile(member) as ff:
