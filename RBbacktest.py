@@ -331,8 +331,6 @@ def func(ca,rtotal,total = [],code = 'IM'):
     fpath = 'data/' + code
     direc = os.listdir(fpath)
     reftd = pd.read_csv(f'preds/{code}.csv')
-    startdate = min([int(i.split('.')[0].split('_')[1]) for i in direc])
-    enddate = max([int(i.split('.')[0].split('_')[1]) for i in direc])
     reftd = reftd[(pd.to_datetime(reftd['Date']) >= pd.to_datetime(str(startdate))) & 
                   (pd.to_datetime(reftd['Date']) <= pd.to_datetime(str(enddate)))].reset_index(drop=True)
 
@@ -363,11 +361,6 @@ def func(ca,rtotal,total = [],code = 'IM'):
 
             return [r1r2r3[0],r1r2r3[1],r1r2r3[2],ap,at,sl,day_pnl,day_trades]
         gc.collect()
-        with Pool(processes = 16) as pool:
-            result = pool.map(lambda atsl:subfunc(atsl), rtotal)
-        # result = []
-        # for r in tqdm(rtotal):
-        #     result.append(subfunc(r))
         
         to_save = result
         to_save = pd.DataFrame(to_save,columns=['r1','r2','r3','ap','at','sl','pnl','trades'])
@@ -398,7 +391,6 @@ if __name__ == '__main__':
 
     # apatsl = list(itertools.product([x for x in range(2,20)],[x / 10 for x in range(1,20)], [x / 10 for x in range(2,20)]))
     apatsl = [[2,0.5,2.4]]
-    n = 20
     r1r2r3 = list(itertools.product([x / n for x in range(n)],[x / n for x in range(n)],[x / n for x in range(n)]))
     # with Pool(processes = 10) as pool:
     #     resultss = pool.map(lambda cp:func(cp), cpap)
